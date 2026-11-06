@@ -644,7 +644,7 @@ function setupConn(conn) {
         if (v.every(isFinite)) {
           // une bombe de bot n'est acceptée que si c'est l'hôte qui l'envoie
           const owner = conn.peer === hostId && typeof data.owner === 'string' && /^bot\d+$/.test(data.owner) ? data.owner : conn.peer;
-          const t = aimFrom(v[0], v[1], v[2], v[3]);   // on refuse les lancers au-delà de la portée
+          const t = aimFrom(v[0], v[1], v[2], v[3], rangeOf(players[owner]) * 1.05);   // on refuse les lancers au-delà de la portée (bonus compris)
           launchBomb(owner, v[0], v[1], t.x, t.y, !!data.mega, !!data.hr, !!data.gl);
         }
         break;
@@ -1082,10 +1082,11 @@ function clampField(x, y) {
 }
 
 // Point d'arrivée : là où on a visé, ramené à la portée maximale
-function aimFrom(sx, sy, tx, ty) {
+function aimFrom(sx, sy, tx, ty, range) {
+  const R = range || BOMB_RANGE;
   let dx = tx - sx, dy = ty - sy;
   const d = Math.hypot(dx, dy);
-  if (d > BOMB_RANGE) { dx *= BOMB_RANGE / d; dy *= BOMB_RANGE / d; }
+  if (d > R) { dx *= R / d; dy *= R / d; }
   return clampField(sx + dx, sy + dy);
 }
 
@@ -1467,7 +1468,7 @@ function launchBomb(owner, sx, sy, tx, ty, mega, hurry, glue) {
 function throwBomb(tx, ty) {
   const now = performance.now();
   if (!myId || me.stunUntil > performance.now() || (me.dead && !me.ghost) || waiting || game.winner || game.endResult || now < goAt || now < bombReadyAt) return false;
-  const t = aimFrom(me.x, me.y, tx, ty);
+  const t = aimFrom(me.x, me.y, tx, ty, rangeOf(me));
   bombCdTotal = me.ghost ? GHOST_CD : (game.party ? PARTY_BOMB_CD : BOMB_CD);
   bombReadyAt = now + bombCdTotal;
   const glue = !!me.ghost;                       // un fantôme lance de la glu, pas une vraie bombe
@@ -1504,8 +1505,9 @@ function throwAtNearest() {
   const ch = champion();
   if (ch && game.matchWinner !== myId) { throwBomb(ch.x, ch.y); return; }
   const t = nearestEnemy(me.x, me.y, myId);
-  if (t && t.d <= BOMB_RANGE * 1.2 && t.d > BLAST_R + RADIUS + 10) throwBomb(t.x, t.y);
-  else throwBomb(me.x + facing.x * BOMB_RANGE * 0.6, me.y + facing.y * BOMB_RANGE * 0.6);
+  const rg = rangeOf(me);
+  if (t && t.d <= rg * 1.2 && t.d > BLAST_R + RADIUS + 10) throwBomb(t.x, t.y);
+  else throwBomb(me.x + facing.x * rg * 0.6, me.y + facing.y * rg * 0.6);
 }
 
 function damage(p, color, owner, victimId, dmg = BOMB_DMG) {
@@ -1781,16 +1783,19 @@ const PICK_R = 30;                       // rayon du jeton sur le terrain
 const PICK_LIFE = 8000;                  // il disparaît au bout de 8 s
 const PICK_EVERY = [8000, 12000];        // délai avant le suivant
 const HEAL_AMT = 25, SHIELD_MS = 8000, SPEED_MS = 5000, SPEED_MUL = 1.4;
+const RANGE_MS = 8000, RANGE_MUL = 1.6;   // bonus longue portée : les bombes vont 60 % plus loin pendant 8 s
+function rangeOf(p) { return BOMB_RANGE * (p && p.rangeUntil > performance.now() ? RANGE_MUL : 1); }
 const MEGA_DMG = 40, MEGA_BLAST = 1.5;
-const BONUS_KINDS = ['heal', 'shield', 'mega', 'speed'];
-const BONUS_WEIGHTS = { heal: 4, shield: 2, mega: 2, speed: 2 };   // la potion sort plus souvent
-const BONUS_COL = { heal: '#ff3b5c', shield: '#2f8cff', mega: '#ff7a00', speed: '#ffd400' };
-const BONUS_DARK = { heal: '#c2183a', shield: '#1659c9', mega: '#d14d00', speed: '#e0a800' };
+const BONUS_KINDS = ['heal', 'shield', 'mega', 'speed', 'range'];
+const BONUS_WEIGHTS = { heal: 4, shield: 2, mega: 2, speed: 2, range: 2 };   // la potion sort plus souvent
+const BONUS_COL = { heal: '#ff3b5c', shield: '#2f8cff', mega: '#ff7a00', speed: '#ffd400', range: '#a05cff' };
+const BONUS_DARK = { heal: '#c2183a', shield: '#1659c9', mega: '#d14d00', speed: '#e0a800', range: '#6b2fc9' };
 const BONUS_FX = {
   heal:   { word: 'GULP!', sub: '+' + HEAL_AMT, fill: '#b6ff9c', txt: '#22c24a' },
   shield: { word: 'BLING!', fill: '#d8f0ff', txt: '#2f8cff' },
   mega:   { word: 'MEGA!', fill: '#ffe14a', txt: '#ff6a00' },
   speed:  { word: 'ZOOM!', fill: '#fff59a', txt: '#ffb300' },
+  range:  { word: 'TIR LONG!', sub: 'PORTÉE +', fill: '#ecdcff', txt: '#9b4dff' },
   pop:    { word: 'POP!', fill: '#ffffff', txt: '#59a8ff' }
 };
 let pickupExpires = 0;       // heure locale de disparition du bonus affiché
@@ -1862,9 +1867,10 @@ function applyBonus(p, kind) {
   if (kind === 'shield') p.shieldUntil = now + SHIELD_MS;
   if (kind === 'mega') p.mega = true;
   if (kind === 'speed') p.speedUntil = now + SPEED_MS;
+  if (kind === 'range') p.rangeUntil = now + RANGE_MS;
   p.healAt = kind === 'heal' ? now : p.healAt;
 }
-function clearBonus(p) { p.shieldUntil = 0; p.mega = false; p.speedUntil = 0; }
+function clearBonus(p) { p.shieldUntil = 0; p.mega = false; p.speedUntil = 0; p.rangeUntil = 0; }
 function speedMul(p) { if (p.stunUntil > performance.now()) return 0; return (p.speedUntil > performance.now() ? SPEED_MUL : 1) * glueMul(p); }
 // Dans une flaque de glu, on avance au ralenti
 function glueMul(p) {
@@ -1891,13 +1897,14 @@ function checkPickup() {
 function bonusState(p) {
   const now = performance.now();
   return { sh: Math.max(0, Math.round((p.shieldUntil || 0) - now)), mg: p.mega ? 1 : 0,
-           sp: Math.max(0, Math.round((p.speedUntil || 0) - now)), pop: p.pops || 0 };
+           sp: Math.max(0, Math.round((p.speedUntil || 0) - now)), rg: Math.max(0, Math.round((p.rangeUntil || 0) - now)), pop: p.pops || 0 };
 }
 function applyBonusState(p, data, now) {
   const sh = Math.min(SHIELD_MS, Math.max(0, Number(data.sh) || 0));
   const sp = Math.min(SPEED_MS, Math.max(0, Number(data.sp) || 0));
   p.shieldUntil = sh ? now + sh : 0;
   p.speedUntil = sp ? now + sp : 0;
+  { const rg = Math.min(RANGE_MS, Math.max(0, Number(data.rg) || 0)); p.rangeUntil = rg ? now + rg : 0; }
   p.mega = !!data.mg;
   const pop = Number(data.pop) || 0;
   if (p.pops != null && pop > p.pops) addFxBubble(p, 'pop');    // son bouclier vient d'éclater
@@ -1989,6 +1996,14 @@ function bnMega(x, y, s) {
   G.textAlign = 'center'; G.textBaseline = 'middle'; G.font = '13px ' + TITLE_FONT; G.fillStyle = INK; G.fillText('XL', -17, 17);
   G.restore();
 }
+// Longue portée : cible rouge et blanche traversée par une flèche
+function bnRange(x, y, s) {
+  G.save(); G.translate(x, y); G.scale(s, s); G.lineJoin = 'round'; G.lineCap = 'round';
+  [[22, RED], [15, '#ffffff'], [8, RED]].forEach(([r, c]) => { G.beginPath(); G.arc(4, 4, r, 0, Math.PI * 2); G.fillStyle = c; G.fill(); G.lineWidth = 3; G.strokeStyle = INK; G.stroke(); });
+  G.beginPath(); G.moveTo(-24, -20); G.lineTo(4, 4); G.lineWidth = 7; G.strokeStyle = INK; G.stroke(); G.lineWidth = 3.5; G.strokeStyle = '#a05cff'; G.stroke();
+  G.beginPath(); G.moveTo(-27, -23); G.lineTo(-17, -24); G.lineTo(-25, -14); G.closePath(); G.fillStyle = '#ffd93b'; G.fill(); G.lineWidth = 2.5; G.strokeStyle = INK; G.stroke();
+  G.restore();
+}
 function bnBolt(x, y, s) {
   G.save(); G.translate(x, y); G.scale(s, s);
   G.lineJoin = 'round';
@@ -2004,6 +2019,7 @@ function bnIcon(x, y, kind, s) {
   if (kind === 'shield') bnShield(x, y, s);
   if (kind === 'mega') bnMega(x - 3 * s, y + 4 * s, s * 0.72);
   if (kind === 'speed') bnBolt(x, y, s);
+  if (kind === 'range') bnRange(x, y, s);
 }
 // Bonus posé : juste l'icône, façon autocollant (liseré blanc épais), mise en cache
 const tokenCache = {};
@@ -2112,12 +2128,13 @@ function drawHealFx(p, now) {
 }
 
 // Bonus actifs : petits modules accrochés en bas à droite du rond (le liseré coloré = temps restant)
-const MOD_R = 12.5, MOD_ANG = [Math.PI / 4, Math.PI / 4 + 0.9, Math.PI / 4 - 0.9];
+const MOD_R = 12.5, MOD_ANG = [Math.PI / 4, Math.PI / 4 + 0.9, Math.PI / 4 - 0.9, Math.PI / 4 + 1.8];
 function drawBadges(p, now) {
   const list = [];
   if (p.shieldUntil > now) list.push(['shield', (p.shieldUntil - now) / SHIELD_MS]);
   if (p.mega) list.push(['mega', 1]);
   if (p.speedUntil > now) list.push(['speed', (p.speedUntil - now) / SPEED_MS]);
+  if (p.rangeUntil > now) list.push(['range', (p.rangeUntil - now) / RANGE_MS]);
   list.forEach(([kind, prog], i) => {
     const a = MOD_ANG[i], d = RADIUS + MOD_R + 2;   // juste à l'extérieur du bord
     const bx = p.x + Math.cos(a) * d, by = p.y + Math.sin(a) * d;
@@ -2882,9 +2899,9 @@ function updateBots(dt) {
     if (!game.winner && now >= b.bombAt && !(b.stunUntil > now) && !(game.party && game.matchWinner === id)) {
       const chb = champion();
       const t = chb ? { x: chb.x, y: chb.y, d: Math.hypot(chb.x - b.x, chb.y - b.y) } : nearestEnemy(b.x, b.y, id);
-      if (t && t.d <= BOMB_RANGE) {
+      if (t && t.d <= rangeOf(b)) {
         const a = Math.random() * Math.PI * 2, err = Math.random() * 35;
-        const aim = aimFrom(b.x, b.y, t.x + Math.cos(a) * err, t.y + Math.sin(a) * err);
+        const aim = aimFrom(b.x, b.y, t.x + Math.cos(a) * err, t.y + Math.sin(a) * err, rangeOf(b));
         const mega = !!b.mega; b.mega = false;
         const hurry = hurryOn(now);
         launchBomb(id, b.x, b.y, aim.x, aim.y, mega, hurry);
@@ -3227,6 +3244,10 @@ function draw(now) {
   for (const [p, id] of bodies) drawSpeedTrail(p, colorOf(id), now);
   for (const [p, id, isMe] of bodies) {
     drawShieldBubble(p, now);
+    if (isMe && p.rangeUntil > now) {   // portée allongée : cercle en pointillés violet autour de soi
+      ctx.save(); ctx.setLineDash([10, 9]); ctx.lineDashOffset = -now / 40; ctx.beginPath(); ctx.arc(p.x, p.y, rangeOf(p), 0, Math.PI * 2);
+      ctx.globalAlpha = 0.45 + 0.15 * Math.sin(now / 200); ctx.lineWidth = 3; ctx.strokeStyle = '#a05cff'; ctx.stroke(); ctx.restore();
+    }
     drawPlayer(p, colorOf(id), isMe ? me.name : p.name, isMe, now);
   }
   for (const [p] of bodies) { drawHealFx(p, now); drawBadges(p, now); }
