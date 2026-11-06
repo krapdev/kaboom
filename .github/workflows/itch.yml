@@ -1,0 +1,47 @@
+# Ilimba : envoie automatiquement le jeu sur itch.io à chaque push sur main
+# qui modifie index.html (ou à la main : onglet Actions → Déploiement itch.io → Run workflow).
+# À régler une fois dans GitHub (Settings → Secrets and variables → Actions) :
+#   - secret   BUTLER_API_KEY : ta clé API itch.io
+#   - variable ITCH_GAME      : ton-pseudo-itch/nom-du-jeu  (ex. krapdev/ilimba)
+name: Déploiement itch.io
+on:
+  push:
+    branches: [main]
+    paths: ['index.html']
+  workflow_dispatch:
+jobs:
+  itch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vérifier les réglages
+        id: cfg
+        env:
+          KEY: ${{ secrets.BUTLER_API_KEY }}
+          GAME: ${{ vars.ITCH_GAME }}
+        run: |
+          if [ -z "$KEY" ] || [ -z "$GAME" ]; then
+            echo "::warning::BUTLER_API_KEY ou ITCH_GAME manquant : envoi sur itch.io ignoré."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Préparer le paquet
+        if: steps.cfg.outputs.ok == 'true'
+        run: |
+          mkdir -p build
+          cp index.html build/
+          [ -d icons ] && cp -r icons build/
+          [ -f manifest.webmanifest ] && cp manifest.webmanifest build/
+          echo "VERSION=$(grep -oP "VERSION='\K[0-9.]+" index.html)" >> "$GITHUB_ENV"
+      - name: Installer butler
+        if: steps.cfg.outputs.ok == 'true'
+        run: |
+          curl -sSL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d butler && chmod +x butler/butler
+          ./butler/butler -V
+      - name: Envoyer sur itch.io
+        if: steps.cfg.outputs.ok == 'true'
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: ./butler/butler push build "${{ vars.ITCH_GAME }}:html5" --userversion "$VERSION"
