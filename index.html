@@ -3244,10 +3244,6 @@ function draw(now) {
   for (const [p, id] of bodies) drawSpeedTrail(p, colorOf(id), now);
   for (const [p, id, isMe] of bodies) {
     drawShieldBubble(p, now);
-    if (isMe && p.rangeUntil > now) {   // portée allongée : cercle en pointillés violet autour de soi
-      ctx.save(); ctx.setLineDash([10, 9]); ctx.lineDashOffset = -now / 40; ctx.beginPath(); ctx.arc(p.x, p.y, rangeOf(p), 0, Math.PI * 2);
-      ctx.globalAlpha = 0.45 + 0.15 * Math.sin(now / 200); ctx.lineWidth = 3; ctx.strokeStyle = '#a05cff'; ctx.stroke(); ctx.restore();
-    }
     drawPlayer(p, colorOf(id), isMe ? me.name : p.name, isMe, now);
   }
   for (const [p] of bodies) { drawHealFx(p, now); drawBadges(p, now); }
