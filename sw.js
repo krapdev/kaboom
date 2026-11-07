@@ -2,7 +2,7 @@
 // - le jeu (page, icônes) : réseau d'abord, cache en secours → on a toujours la dernière version quand on est en ligne
 // - polices Google et bibliothèque PeerJS : cache d'abord (elles ne changent pas)
 // Le multijoueur a besoin d'internet : hors ligne, seuls le menu et le « Comment jouer » s'affichent.
-const VERSION = 'kaboom-v125';
+const VERSION = 'kaboom-v126';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
