@@ -89,13 +89,19 @@
   #lobby .panel.title::before, #lobby .panel.title::after { display: none; }
   #lobby .title .hdr { margin: clamp(6px, 2.5vh, 30px) auto 0; padding: clamp(26px, 6.5vh, 54px) clamp(64px, 10vw, 120px) clamp(30px, 7.5vh, 60px);
                        align-self: center; filter: drop-shadow(5px 6px 0 rgba(6, 30, 40, .45)); }
-  #lobby .title .hdr::before { inset: -5px; clip-path: polygon(50% 0%, 57.5% 13%, 68% 6%, 71% 19%, 86% 14%, 81.5% 29%, 96% 32%, 87% 44%, 99% 54%, 85.5% 61%, 92% 75%, 76.5% 74%, 74% 90%, 61% 81%, 50% 96%, 39% 81%, 26% 90%, 23.5% 74%, 8% 75%, 14.5% 61%, 1% 54%, 13% 44%, 4% 32%, 18.5% 29%, 14% 14%, 29% 19%, 32% 6%, 42.5% 13%); background: var(--ink); }
+  #lobby .title .hdr::before { inset: -7px; clip-path: polygon(50% 0%, 57.5% 13%, 68% 6%, 71% 19%, 86% 14%, 81.5% 29%, 96% 32%, 87% 44%, 99% 54%, 85.5% 61%, 92% 75%, 76.5% 74%, 74% 90%, 61% 81%, 50% 96%, 39% 81%, 26% 90%, 23.5% 74%, 8% 75%, 14.5% 61%, 1% 54%, 13% 44%, 4% 32%, 18.5% 29%, 14% 14%, 29% 19%, 32% 6%, 42.5% 13%); background: var(--ink); }
+  /* explosion rouge plus grande, décalée, derrière la jaune : profondeur et punch */
+  #lobby .title .burst2 { position: absolute; inset: -6% -9% -18%; z-index: -3; pointer-events: none; transform: rotate(9deg); animation: burstPulse 2.4s ease-in-out infinite; }
+  #lobby .title .burst2::before, #lobby .title .burst2::after { content: ""; position: absolute; clip-path: polygon(50% 0%, 57.5% 13%, 68% 6%, 71% 19%, 86% 14%, 81.5% 29%, 96% 32%, 87% 44%, 99% 54%, 85.5% 61%, 92% 75%, 76.5% 74%, 74% 90%, 61% 81%, 50% 96%, 39% 81%, 26% 90%, 23.5% 74%, 8% 75%, 14.5% 61%, 1% 54%, 13% 44%, 4% 32%, 18.5% 29%, 14% 14%, 29% 19%, 32% 6%, 42.5% 13%); }
+  #lobby .title .burst2::before { inset: -7px; background: var(--ink); }
+  #lobby .title .burst2::after { inset: 0; background: radial-gradient(rgba(90, 0, 0, .3) 2px, transparent 2.5px) 0 0 / 10px 10px, radial-gradient(ellipse at 50% 50%, #ff6a3c 0 45%, #e8302a 75%); }
+  @keyframes burstPulse { 0%, 100% { scale: 1; } 50% { scale: 1.045; } }
   #lobby .title .hdr::after { inset: 0; clip-path: polygon(50% 0%, 57.5% 13%, 68% 6%, 71% 19%, 86% 14%, 81.5% 29%, 96% 32%, 87% 44%, 99% 54%, 85.5% 61%, 92% 75%, 76.5% 74%, 74% 90%, 61% 81%, 50% 96%, 39% 81%, 26% 90%, 23.5% 74%, 8% 75%, 14.5% 61%, 1% 54%, 13% 44%, 4% 32%, 18.5% 29%, 14% 14%, 29% 19%, 32% 6%, 42.5% 13%);
                               background:
-                                radial-gradient(rgba(120, 40, 0, .3) 1.9px, transparent 2.3px) 0 0 / 9px 9px,          /* trame de points BD */
-                                radial-gradient(rgba(150, 40, 0, .22) 1.9px, transparent 2.3px) 4.5px 4.5px / 9px 9px,
-                                radial-gradient(ellipse 46% 40% at 50% 52%, #1b93a8 0 70%, transparent 71%),             /* cœur bleu-vert (la mer) : fait claquer le jaune et le rouge */
-                                radial-gradient(ellipse 70% 62% at 50% 52%, #ffe45a 0 55%, #ffc52e 100%); }
+                                radial-gradient(rgba(140, 50, 0, .38) 2.1px, transparent 2.5px) 0 0 / 9px 9px,          /* trame de points BD, plus marquée */
+                                radial-gradient(ellipse 46% 40% at 50% 52%, #1b93a8 0 70%, transparent 71%),             /* cœur bleu-vert (la mer) */
+                                repeating-conic-gradient(from 0deg at 50% 52%, rgba(255,255,255,.3) 0 6deg, transparent 6deg 15deg),   /* rayons qui partent du centre */
+                                radial-gradient(ellipse 70% 62% at 50% 52%, #fff06a 0 45%, #ffcf1a 80%, #ffb000 100%); }
   /* titre façon couverture de comics : lettres bâton penchées, remplissage en bandes jaune → rouge,
      gros contour noir, relief 3D, chaque lettre légèrement de travers, arrivée en « smash » */
   #lobby .title .logo { display: flex; align-items: flex-end; font-family: 'Bangers', var(--title); font-size: clamp(54px, 17vh, 112px);
@@ -296,7 +302,7 @@
                     10% { transform: scale(1) rotate(-4deg) } 22% { opacity: 1; transform: scale(1) rotate(-4deg) }
                     28%, 100% { opacity: 0; transform: scale(.7) rotate(-4deg) } }
   @media (prefers-reduced-motion: reduce) {
-    #lobby, #wait, #wait .panel, #game, #sea, #lobby::before, #lobby::after, #wait::after, .fx::before, .panel, .logo, .tag, .lbl, #name, .btn-big, .ou, .row, .opt, .note, #msg.pop, .boom, #waitList li.new { animation: none !important; }
+    #lobby, #wait, #wait .panel, #lobby .title .burst2, #game, #sea, #lobby::before, #lobby::after, #wait::after, .fx::before, .panel, .logo, .tag, .lbl, #name, .btn-big, .ou, .row, .opt, .note, #msg.pop, .boom, #waitList li.new { animation: none !important; }
     .boom { display: none; }
   }
   @media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
@@ -324,7 +330,7 @@
   <div class="fx" aria-hidden="true">
   </div>
   <div class="panel title">
-    <div class="hdr"><h1 class="logo" aria-label="Kaboom"><span>K</span><span>A</span><span>B</span><span>O</span><span>O</span><span>M</span></h1></div>
+    <div class="hdr"><span class="burst2" aria-hidden="true"></span><h1 class="logo" aria-label="Kaboom"><span>K</span><span>A</span><span>B</span><span>O</span><span>O</span><span>M</span></h1></div>
     <p class="tag">Le dernier debout gagne !</p>
     <div class="formbox">
     <label class="lbl" for="name">Ton pseudo</label>
