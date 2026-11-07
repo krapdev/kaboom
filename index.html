@@ -2672,7 +2672,114 @@ function drawHowto(now) {
   }
   ctx.restore();
 }
-// Kaboom de l'écran d'accueil : chacun a sa petite vie, en boucle de 7 s décalée d'un perso à l'autre.
+// Écran d'accueil : les quatre Kaboom se baladent comme en jeu et se lancent des bombes à eau.
+// Tout se passe en coordonnées écran, dans la bande de sable entre le titre et le formulaire.
+const menuPlay = { kb: [], balloons: [], drops: [], last: 0 };
+function drawMenuPlay(now, zone, R) {
+  const s = R / RADIUS, mp = menuPlay;
+  const dt = Math.min(0.05, Math.max(0, (now - (mp.last || now)) / 1000)); mp.last = now;
+  if (zone.y1 - zone.y0 < R * 0.5) zone.y1 = zone.y0 + R * 0.5;
+  const rnd = () => [zone.x0 + Math.random() * (zone.x1 - zone.x0), zone.y0 + Math.random() * (zone.y1 - zone.y0)];
+  if (mp.kb.length !== 4 || mp.R !== R) {
+    mp.R = R; mp.kb = [];
+    for (let k = 0; k < 4; k++) {
+      const x = zone.x0 + (zone.x1 - zone.x0) * (k + 0.5) / 4, y = (zone.y0 + zone.y1) / 2 + (k % 2 ? 0.3 : -0.3) * (zone.y1 - zone.y0);
+      mp.kb.push({ k, sx: x, sy: y, tx: x, ty: y, pause: 500 + k * 400, throwAt: now + 900 + k * 700,
+                   b: { x: x / s, y: y / s, hp: HP_MAX * (1 - k * 0.12), bobPhase: k * 1300, hitAt: 0 } });
+    }
+  }
+  const sp = 95 * s;                                          // vitesse de promenade (px/s)
+  for (const m of mp.kb) {
+    // déplacement : vers un point au hasard, petite pause, on repart
+    const dx = m.tx - m.sx, dy = m.ty - m.sy, d = Math.hypot(dx, dy);
+    if (d < 3) { m.pause -= dt * 1000; if (m.pause <= 0) { [m.tx, m.ty] = rnd(); m.pause = 300 + Math.random() * 1400; } }
+    else if (!(m.b.hitAt && now - m.b.hitAt < 350)) { const v = Math.min(d, sp * dt); m.sx += dx / d * v; m.sy += dy / d * v; }
+    m.sx = Math.max(zone.x0, Math.min(zone.x1, m.sx)); m.sy = Math.max(zone.y0, Math.min(zone.y1, m.sy));
+    // un petit écart entre eux, comme les collisions du jeu
+    for (const o of mp.kb) if (o !== m) { const ex = m.sx - o.sx, ey = m.sy - o.sy, ed = Math.hypot(ex, ey) || 1, min = R * 2.1; if (ed < min) { m.sx += ex / ed * (min - ed) * 0.5; m.sy += ey / ed * (min - ed) * 0.5; } }
+    // lancer d'une bombe à eau sur un autre Kaboom
+    if (now >= m.throwAt) {
+      const others = mp.kb.filter(o => o !== m), t = others[Math.floor(Math.random() * others.length)];
+      const ax = t.sx + (Math.random() - 0.5) * R * 0.8, ay = t.sy + (Math.random() - 0.5) * R * 0.5;
+      mp.balloons.push({ x0: m.sx, y0: m.sy - R * 0.4, x1: ax, y1: ay, t0: now, dur: 520 + Math.hypot(ax - m.sx, ay - m.sy) / s * 0.6, target: t, from: m });
+      m.b.thrownAt = now; m.b.cdTotal = 2200;
+      m.throwAt = now + 2200 + Math.random() * 2600;
+    }
+    m.b.x = m.sx / s; m.b.y = m.sy / s;
+  }
+  // bombes à eau en vol, éclaboussures à l'arrivée
+  for (let i = mp.balloons.length - 1; i >= 0; i--) {
+    const bl = mp.balloons[i], u = (now - bl.t0) / bl.dur;
+    if (u >= 1) {
+      mp.balloons.splice(i, 1);
+      for (let j = 0; j < 12; j++) { const a = Math.random() * Math.PI * 2, v = (60 + Math.random() * 110) * s; mp.drops.push({ x: bl.x1, y: bl.y1, vx: Math.cos(a) * v, vy: Math.sin(a) * v * 0.6 - 80 * s, t0: now, r: (2 + Math.random() * 2.5) * s }); }
+      mp.drops.push({ ring: true, x: bl.x1, y: bl.y1, t0: now });
+      const t = bl.target;
+      if (Math.hypot(t.sx - bl.x1, t.sy - bl.y1) < R * 1.3) { t.b.hitAt = now; t.b.hp = Math.max(HP_MAX * 0.35, (t.b.hp || HP_MAX) - HP_MAX * 0.08); t.wetUntil = now + 1200; }
+      continue;
+    }
+    bl.x = bl.x0 + (bl.x1 - bl.x0) * u; bl.y = bl.y0 + (bl.y1 - bl.y0) * u; bl.h = Math.sin(u * Math.PI) * R * 2.2; bl.u = u;
+  }
+  // flaques « remplies » doucement : les Kaboom récupèrent
+  for (const m of mp.kb) m.b.hp = Math.min(HP_MAX * (1 - m.k * 0.12), (m.b.hp || HP_MAX) + HP_MAX * 0.02 * dt);
+
+  ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  // anneaux d'eau au sol
+  for (let i = mp.drops.length - 1; i >= 0; i--) {
+    const p = mp.drops[i], a = (now - p.t0) / 1000;
+    if (!p.ring) continue;
+    if (a > 0.6) { mp.drops.splice(i, 1); continue; }
+    const k = a / 0.6;
+    ctx.beginPath(); ctx.ellipse(p.x, p.y + R * 0.2, R * (0.5 + 1.1 * k), R * (0.2 + 0.45 * k), 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(80,170,230,' + (0.35 * (1 - k)) + ')'; ctx.fill();
+    ctx.lineWidth = 2.5 * s; ctx.strokeStyle = 'rgba(30,110,170,' + (0.8 * (1 - k)) + ')'; ctx.stroke();
+  }
+  // ombres des bombes à eau
+  for (const bl of mp.balloons) { const k = 1 - bl.h / (R * 3); ctx.beginPath(); ctx.ellipse(bl.x, bl.y + R * 0.2, R * 0.32 * k, R * 0.12 * k, 0, 0, Math.PI * 2); ctx.fillStyle = 'rgba(105,62,25,.3)'; ctx.fill(); }
+  // Kaboom, triés par profondeur
+  for (const m of mp.kb.slice().sort((a, b) => a.sy - b.sy)) {
+    ctx.save(); ctx.scale(s, s);
+    drawPlayer(m.b, PALETTE[m.k], '', false, now);
+    ctx.restore();
+    if (m.wetUntil > now) {                                    // gouttes qui coulent après le splash
+      const a = 1 - (m.wetUntil - now) / 1200;
+      for (let j = 0; j < 3; j++) { const gx = m.sx + (j - 1) * R * 0.5, gy = m.sy - R * 0.3 + a * R * 0.9 + j * 4;
+        ctx.beginPath(); ctx.moveTo(gx, gy - R * 0.16); ctx.quadraticCurveTo(gx + R * 0.1, gy, gx, gy + R * 0.05); ctx.quadraticCurveTo(gx - R * 0.1, gy, gx, gy - R * 0.16);
+        ctx.fillStyle = 'rgba(140,210,255,' + (1 - a) + ')'; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(11,12,15,' + (0.8 * (1 - a)) + ')'; ctx.stroke(); }
+    }
+  }
+  // bombes à eau (ballon bleu avec son nœud, qui tourne en vol)
+  for (const bl of mp.balloons) {
+    const r = R * 0.3;
+    ctx.save(); ctx.translate(bl.x, bl.y - bl.h); ctx.rotate(bl.u * 5);
+    ctx.beginPath(); ctx.moveTo(0, r * 1.15); ctx.lineTo(-r * 0.25, r * 1.45); ctx.lineTo(r * 0.25, r * 1.45); ctx.closePath(); ctx.fillStyle = '#2f8cff'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = INK; ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(0, 0, r, r * 1.18, 0, 0, Math.PI * 2);
+    const g = ctx.createRadialGradient(-r * 0.35, -r * 0.4, r * 0.1, 0, 0, r * 1.2); g.addColorStop(0, '#bfe6ff'); g.addColorStop(1, '#2f8cff');
+    ctx.fillStyle = g; ctx.fill(); ctx.lineWidth = 2.5; ctx.strokeStyle = INK; ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(-r * 0.35, -r * 0.45, r * 0.22, r * 0.12, -0.6, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.fill();
+    ctx.restore();
+  }
+  // gouttes projetées
+  for (let i = mp.drops.length - 1; i >= 0; i--) {
+    const p = mp.drops[i]; if (p.ring) continue;
+    const a = (now - p.t0) / 1000;
+    if (a > 0.55) { mp.drops.splice(i, 1); continue; }
+    const x = p.x + p.vx * a, y = p.y + p.vy * a + 260 * s * a * a;
+    ctx.beginPath(); ctx.arc(x, y, p.r * (1 - a), 0, Math.PI * 2); ctx.fillStyle = '#8fd3ff'; ctx.fill(); ctx.lineWidth = 1.3; ctx.strokeStyle = INK; ctx.stroke();
+  }
+  // « SPLASH! » au-dessus des Kaboom touchés
+  for (const m of mp.kb) {
+    const a = (now - (m.b.hitAt || -1e9)) / 650;
+    if (a < 0 || a > 1) continue;
+    const sc = a < 0.25 ? 0.5 + 2 * a : 1;
+    ctx.save(); ctx.globalAlpha = a > 0.75 ? (1 - a) / 0.25 : 1; ctx.translate(m.sx + R * 0.9, m.sy - R * 1.5); ctx.scale(sc, sc); ctx.rotate(-0.12);
+    burstBadge(0, 0, R * 1.35, R * 0.75, '#bfe6ff', 0.3);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; bangText('SPLASH!', 0, 1, Math.round(R * 0.66), '#ffffff', '#8fd3ff', '#1659c9');
+    ctx.restore();
+  }
+  ctx.restore();
+}
+// (ancienne animation) Kaboom de l'écran d'accueil : chacun a sa petite vie, en boucle de 7 s décalée d'un perso à l'autre.
 // Il se dandine jusqu'à un point voisin, s'arrête, revient ; de temps en temps un saut avec écrasement à l'atterrissage.
 const menuKb = {};
 function drawMenuKaboom(k, sx, sy, R, now) {
@@ -2722,7 +2829,9 @@ function menuLoop(now) {
       const top = a.bottom + 8, bot = z.top - 6, gap = Math.max(0, bot - top);
       const R = Math.max(14, Math.min(40, gap * 0.24)), span = Math.min(WW * scale * 0.4, W * 0.38);
       const spots = [[-1, 0.4], [-0.45, 0.62], [0.45, 0.62], [1, 0.4]];
-      spots.forEach(([fx, fy], k) => drawMenuKaboom(k, W / 2 + fx * span, Math.min(top + gap * fy + R * 0.3, bot - R * 1.35), R, now));
+      const tg = document.querySelector('#lobby .title .tag'), tr = tg && tg.getBoundingClientRect();
+      const top2 = Math.max(top, tr ? tr.bottom + 4 : top);
+      drawMenuPlay(now, { x0: Math.max(ox + 40 * scale, W / 2 - span - R * 2), x1: Math.min(ox + (WW - 40) * scale, W / 2 + span + R * 2), y0: top2 + R * 1.2, y1: bot - R * 1.2 }, R);
     }
   } catch (e) { if (!menuLoop.err) { menuLoop.err = true; console.error(e); } }
 }
