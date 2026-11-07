@@ -91,17 +91,16 @@
                        align-self: center; filter: drop-shadow(5px 6px 0 rgba(6, 30, 40, .45)); }
   #lobby .title .hdr::before { inset: -7px; clip-path: polygon(50% 0%, 57.5% 13%, 68% 6%, 71% 19%, 86% 14%, 81.5% 29%, 96% 32%, 87% 44%, 99% 54%, 85.5% 61%, 92% 75%, 76.5% 74%, 74% 90%, 61% 81%, 50% 96%, 39% 81%, 26% 90%, 23.5% 74%, 8% 75%, 14.5% 61%, 1% 54%, 13% 44%, 4% 32%, 18.5% 29%, 14% 14%, 29% 19%, 32% 6%, 42.5% 13%); background: var(--ink); }
   /* explosion rouge plus grande, décalée, derrière la jaune : profondeur et punch */
-  #lobby .title .burst2 { position: absolute; inset: -6% -9% -18%; z-index: -3; pointer-events: none; transform: rotate(9deg); animation: burstPulse 2.4s ease-in-out infinite; }
+  #lobby .title .burst2 { position: absolute; inset: -2% -4% -9%; z-index: -3; pointer-events: none; transform: rotate(8deg); }
   #lobby .title .burst2::before, #lobby .title .burst2::after { content: ""; position: absolute; clip-path: polygon(50% 0%, 57.5% 13%, 68% 6%, 71% 19%, 86% 14%, 81.5% 29%, 96% 32%, 87% 44%, 99% 54%, 85.5% 61%, 92% 75%, 76.5% 74%, 74% 90%, 61% 81%, 50% 96%, 39% 81%, 26% 90%, 23.5% 74%, 8% 75%, 14.5% 61%, 1% 54%, 13% 44%, 4% 32%, 18.5% 29%, 14% 14%, 29% 19%, 32% 6%, 42.5% 13%); }
   #lobby .title .burst2::before { inset: -7px; background: var(--ink); }
-  #lobby .title .burst2::after { inset: 0; background: radial-gradient(rgba(90, 0, 0, .3) 2px, transparent 2.5px) 0 0 / 10px 10px, radial-gradient(ellipse at 50% 50%, #ff6a3c 0 45%, #e8302a 75%); }
+  #lobby .title .burst2::after { inset: 0; background: #e8302a; }
   @keyframes burstPulse { 0%, 100% { scale: 1; } 50% { scale: 1.045; } }
   #lobby .title .hdr::after { inset: 0; clip-path: polygon(50% 0%, 57.5% 13%, 68% 6%, 71% 19%, 86% 14%, 81.5% 29%, 96% 32%, 87% 44%, 99% 54%, 85.5% 61%, 92% 75%, 76.5% 74%, 74% 90%, 61% 81%, 50% 96%, 39% 81%, 26% 90%, 23.5% 74%, 8% 75%, 14.5% 61%, 1% 54%, 13% 44%, 4% 32%, 18.5% 29%, 14% 14%, 29% 19%, 32% 6%, 42.5% 13%);
                               background:
-                                radial-gradient(rgba(140, 50, 0, .38) 2.1px, transparent 2.5px) 0 0 / 9px 9px,          /* trame de points BD, plus marquée */
+                                radial-gradient(rgba(140, 50, 0, .22) 1.8px, transparent 2.2px) 0 0 / 10px 10px,        /* trame de points BD, discrète */
                                 radial-gradient(ellipse 46% 40% at 50% 52%, #1b93a8 0 70%, transparent 71%),             /* cœur bleu-vert (la mer) */
-                                repeating-conic-gradient(from 0deg at 50% 52%, rgba(255,255,255,.3) 0 6deg, transparent 6deg 15deg),   /* rayons qui partent du centre */
-                                radial-gradient(ellipse 70% 62% at 50% 52%, #fff06a 0 45%, #ffcf1a 80%, #ffb000 100%); }
+                                radial-gradient(ellipse 70% 62% at 50% 52%, #ffe45a 0 55%, #ffc52e 100%); }
   /* titre façon couverture de comics : lettres bâton penchées, remplissage en bandes jaune → rouge,
      gros contour noir, relief 3D, chaque lettre légèrement de travers, arrivée en « smash » */
   #lobby .title .logo { display: flex; align-items: flex-end; font-family: 'Bangers', var(--title); font-size: clamp(54px, 17vh, 112px);
@@ -2673,6 +2672,31 @@ function drawHowto(now) {
   }
   ctx.restore();
 }
+// Kaboom de l'écran d'accueil : chacun a sa petite vie, en boucle de 7 s décalée d'un perso à l'autre.
+// Il se dandine jusqu'à un point voisin, s'arrête, revient ; de temps en temps un saut avec écrasement à l'atterrissage.
+const menuKb = {};
+function drawMenuKaboom(k, sx, sy, R, now) {
+  const f = menuKb[k] || (menuKb[k] = { x: 0, y: 0, hp: HP_MAX * (1 - k * 0.12), bobPhase: k * 1300, hitAt: 0 });
+  const T = 7000, t = ((now + k * 1750) % T) / T, amp = RADIUS * (k % 3 ? 1.5 : 0.9), dir = [-1, 1, -1, 1][k];   // les deux du milieu vont vers le centre, ceux du bord vers l'extérieur : jamais de collision
+  const ease = u => u * u * (3 - 2 * u);
+  let dx = 0, hop = 0, sqx = 1, sqy = 1;
+  if (t < 0.22) dx = ease(t / 0.22) * amp;                         // part se promener (marche dandinée)
+  else if (t < 0.42) dx = amp;                                     // pause
+  else if (t < 0.64) dx = amp * (1 - ease((t - 0.42) / 0.22));     // revient
+  else if (t >= 0.74 && t < 0.86) {                                // saut
+    const u = (t - 0.74) / 0.12; hop = Math.sin(u * Math.PI) * RADIUS * 1.1;
+    if (u < 0.15) { sqy = 1.15; sqx = 0.9; }
+  } else if (t >= 0.86 && t < 0.9) { const u = (t - 0.86) / 0.04; sqx = 1 + 0.22 * Math.sin(u * Math.PI); sqy = 1 - 0.18 * Math.sin(u * Math.PI); }   // écrasé à l'atterrissage
+  f.x = dx * dir;
+  ctx.save();
+  ctx.translate(sx, sy + R * 1.05); ctx.scale(R / RADIUS, R / RADIUS);
+  // ombre au sol (rapetisse pendant le saut)
+  ctx.fillStyle = 'rgba(105,62,25,.3)'; ctx.beginPath(); ctx.ellipse(f.x + 4, 0, RADIUS * (1 - hop / 90), RADIUS * 0.3 * (1 - hop / 90), 0, 0, Math.PI * 2); ctx.fill();
+  ctx.translate(f.x, 0); ctx.scale(sqx, sqy); ctx.translate(-f.x, -RADIUS * 1.05 - hop);
+  f.noShadow = true; f.y = 0;
+  drawPlayer(f, PALETTE[k], '', false, now);
+  ctx.restore();
+}
 function menuLoop(now) {
   if (!menuOn || document.body.classList.contains('ingame')) { menuOn = false; return; }
   requestAnimationFrame(menuLoop);
@@ -2698,11 +2722,7 @@ function menuLoop(now) {
       const top = a.bottom + 8, bot = z.top - 6, gap = Math.max(0, bot - top);
       const R = Math.max(14, Math.min(40, gap * 0.24)), span = Math.min(WW * scale * 0.4, W * 0.38);
       const spots = [[-1, 0.4], [-0.45, 0.62], [0.45, 0.62], [1, 0.4]];
-      spots.forEach(([fx, fy], k) => {
-        const ph = ((now / 1000 + k * 0.55) % 2.2) / 2.2, hop = ph < 0.18 ? Math.sin(ph / 0.18 * Math.PI) * R * 0.45 : 0;
-        const y = Math.min(top + gap * fy + R * 0.3, bot - R * 1.35);       // les pieds restent au-dessus du formulaire
-        drawMiniBomb(W / 2 + fx * span, y - hop, R, PALETTE[k], now, 'band' + k);
-      });
+      spots.forEach(([fx, fy], k) => drawMenuKaboom(k, W / 2 + fx * span, Math.min(top + gap * fy + R * 0.3, bot - R * 1.35), R, now));
     }
   } catch (e) { if (!menuLoop.err) { menuLoop.err = true; console.error(e); } }
 }
