@@ -988,6 +988,12 @@ function syncSea() {
   const x = extra ? Math.round(ox) : 0;
   if (x !== _seaX) { _seaX = x; el.style.transform = 'translateX(' + x + 'px)'; }
 }
+function placeSoundBtn() {
+  const b = $('sndBtn'); if (!b || !b.style) return;
+  if (!document.body || !document.body.classList || !document.body.classList.contains('ingame')) { b.style.top = b.style.right = b.style.bottom = ''; return; }
+  const tb = timerBox();
+  b.style.bottom = 'auto'; b.style.top = Math.round(tb.y + tb.h / 2 - 21) + 'px'; b.style.right = Math.round(W - tb.x + 14) + 'px';
+}
 let safeR = 0, safeT = 0;   // encoche / coins arrondis du téléphone (en px)
 // Disposition du terrain pour une taille d'écran donnée (partagée par resize() et le préchauffage du décor)
 function calcLayout(W, H) {
@@ -1017,7 +1023,7 @@ function resize() {
     camX = 0;
     ox = (W - WW * scale) / 2;
   }
-  if (typeof layoutJoystick === 'function') layoutJoystick();
+  if (typeof layoutJoystick === 'function') { layoutJoystick(); layoutAim(); placeSoundBtn(); }
 }
 // Préchauffage : pendant que le joueur tape son pseudo, on dessine déjà l'île et la mer
 // (sinon la première image de la partie gèle l'écran pendant le dessin du décor).
@@ -2281,6 +2287,89 @@ function layoutJoystick() {
   if (joy.pid === null) { joy.cx = joy.homeX; joy.cy = joy.homeY; }
 }
 
+// ---- Stick de visée (tactile, moitié droite) : on glisse pour viser, on lâche pour lancer.
+// La distance du lancer suit l'écart du pouce. Pouce ramené au centre = annulé. Pas de visée automatique.
+const aim = { pid: null, cx: 0, cy: 0, kx: 0, ky: 0, baseR: 70, travel: 60, homeX: 0, homeY: 0 };
+const AIM_DEAD = 0.25;             // en dessous : rien ne part (annulation)
+function layoutAim() {
+  aim.baseR = joy.baseR; aim.travel = joy.baseR * 0.9;
+  const margin = 24 + aim.baseR;
+  aim.homeX = W - margin; aim.homeY = H - margin;
+  if (aim.pid === null) { aim.cx = aim.homeX; aim.cy = aim.homeY; }
+}
+function aimStart(id, x, y) {
+  aim.pid = id;
+  const m = aim.baseR + 6;
+  aim.cx = Math.max(m, Math.min(W - m, x)); aim.cy = Math.max(m, Math.min(H - m, y));
+  aim.kx = aim.ky = 0;
+}
+function aimMove(x, y) {
+  let dx = x - aim.cx, dy = y - aim.cy, d = Math.hypot(dx, dy);
+  if (d > aim.travel) { const over = d - aim.travel; aim.cx += dx / d * over; aim.cy += dy / d * over; dx = x - aim.cx; dy = y - aim.cy; }
+  aim.kx = dx; aim.ky = dy;
+}
+// point visé sur le terrain (null si le pouce est dans la zone d'annulation)
+function aimTarget() {
+  const d = Math.hypot(aim.kx, aim.ky), m = Math.min(1, d / aim.travel);
+  if (aim.pid === null || m < AIM_DEAD) return null;
+  const u = (m - AIM_DEAD) / (1 - AIM_DEAD), dist = rangeOf(me) * (0.15 + 0.85 * u);
+  return aimFrom(me.x, me.y, me.x + aim.kx / d * dist, me.y + aim.ky / d * dist, rangeOf(me));
+}
+function aimEnd(cancelled) {
+  const t = cancelled ? null : aimTarget();
+  aim.pid = null; aim.kx = aim.ky = 0; aim.cx = aim.homeX; aim.cy = aim.homeY;
+  if (t) throwBomb(t.x, t.y);
+}
+function canThrowNow() {
+  const now = performance.now();
+  return !!myId && !(me.stunUntil > now) && !(me.dead && !me.ghost) && !waiting && !game.winner && !game.endResult && now >= goAt && now >= bombReadyAt;
+}
+// stick à l'écran (coordonnées écran)
+function drawAimStick() {
+  if (!joy.enabled || !myId || (me.dead && !me.ghost)) return;
+  const active = aim.pid !== null, ready = canThrowNow();
+  const { cx, cy, baseR } = aim, tx = cx + aim.kx, ty = cy + aim.ky;
+  const m = Math.min(1, Math.hypot(aim.kx, aim.ky) / aim.travel), cancel = active && m < AIM_DEAD;
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, baseR, 0, Math.PI * 2);
+  ctx.fillStyle = active ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.06)'; ctx.fill();
+  ctx.lineWidth = 1.5; ctx.strokeStyle = active ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.16)'; ctx.stroke();
+  // zone d'annulation au centre
+  ctx.beginPath(); ctx.arc(cx, cy, aim.travel * AIM_DEAD, 0, Math.PI * 2); ctx.setLineDash([4, 4]); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.stroke(); ctx.setLineDash([]);
+  // bouton qui suit le pouce : rouge si prêt, gris pendant la recharge ; une petite bombe dessus
+  const r = joy.r;
+  ctx.globalAlpha = active ? 1 : 0.8;
+  ctx.beginPath(); ctx.arc(tx + 2, ty + 3, r, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fill();
+  ctx.beginPath(); ctx.arc(tx, ty, r, 0, Math.PI * 2); ctx.fillStyle = cancel ? '#8a8f9c' : (ready ? (me.ghost ? '#7be04a' : RED) : '#6b7080'); ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = INK; ctx.stroke();
+  if (cancel) {   // croix : relâcher ici n'envoie rien
+    const k = r * 0.32; ctx.beginPath(); ctx.moveTo(tx - k, ty - k); ctx.lineTo(tx + k, ty + k); ctx.moveTo(tx + k, ty - k); ctx.lineTo(tx - k, ty + k); ctx.lineWidth = 4; ctx.strokeStyle = '#fff'; ctx.stroke();
+  } else fuseBomb(tx - r * 0.08, ty + r * 0.08, r * 0.42, performance.now(), false);
+  ctx.restore();
+}
+// aperçu du lancer sur le terrain (coordonnées terrain) : trajectoire en cloche + zone d'impact
+function drawAimPreview(now) {
+  const t = aimTarget();
+  if (!t || (me.dead && !me.ghost)) return;
+  const ready = canThrowNow(), glue = !!me.ghost;
+  const r = glue ? GLUE_R : BLAST_R * (me.mega ? MEGA_BLAST : 1) * (hurryOn(now) ? HURRY_BLAST : 1);
+  const col = !ready ? 'rgba(80,85,100,.7)' : (glue ? '#3f9a2a' : '#d8321f');
+  ctx.save(); ctx.lineCap = 'round';
+  // trajectoire en pointillés qui défilent vers la cible
+  const sx = me.x, sy = me.y - RADIUS * 0.3, d = Math.hypot(t.x - sx, t.y - sy), hgt = Math.min(110, 30 + d * 0.3);
+  ctx.setLineDash([2, 13]); ctx.lineDashOffset = -now / 25; ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(255,255,255,.9)';
+  ctx.beginPath(); ctx.moveTo(sx, sy); ctx.quadraticCurveTo((sx + t.x) / 2, (sy + t.y) / 2 - hgt * 2, t.x, t.y); ctx.stroke();
+  ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.stroke();
+  // zone d'impact
+  ctx.setLineDash([9, 7]); ctx.lineDashOffset = now / 40;
+  ctx.beginPath(); ctx.arc(t.x, t.y, r, 0, Math.PI * 2);
+  ctx.fillStyle = !ready ? 'rgba(80,85,100,.12)' : (glue ? 'rgba(123,224,74,.2)' : 'rgba(255,90,60,.2)'); ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath(); ctx.arc(t.x, t.y, 5, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+  ctx.restore();
+}
+
 function inField(x, y) {
   return x >= ox && x <= ox + WW * scale && y >= oy && y <= oy + WH * scale;
 }
@@ -2329,9 +2418,9 @@ function releaseJoy() {
 function joyEnd(x, y, cancelled) {
   // souris : un clic sans glisser lance toujours une bombe, même s'il dure ; au doigt, il faut un tap court
   const mouse = String(joy.pid).startsWith('p');
-  const tap = !cancelled && !joy.moved && (mouse || performance.now() - joy.startAt < TAP_MS);
+  const tap = !cancelled && !joy.moved && mouse;   // au doigt : la bombe part uniquement avec le stick de droite
   releaseJoy();
-  if (tap) throwAtScreen(x, y);             // tap rapide à gauche : bombe à cet endroit
+  if (tap) throwAtScreen(x, y);             // clic sans glisser (souris) : bombe à cet endroit
 }
 
 function throwAtScreen(x, y) { return throwBomb((x - ox) / scale, (y - oy) / scale); }
@@ -2345,6 +2434,10 @@ function screenPos(e) {
 const bombTouches = new Set();
 function pressAt(id, x, y) {
   if (joy.pid === null && inJoyZone(x, y)) { joyStart(id, x, y); return 'joy'; }
+  if (String(id).startsWith('t')) {           // doigt : à droite, c'est le stick de visée (aucun lancer au toucher)
+    if (aim.pid === null) { aimStart(id, x, y); return 'aim'; }
+    return 'none';
+  }
   bombTouches.add(id);
   throwAtScreen(x, y);
   return 'bomb';
@@ -2364,6 +2457,7 @@ canvas.addEventListener('touchmove', e => {
   for (const t of e.changedTouches) {
     const id = 't' + t.identifier, p = touchXY(t);
     if (id === joy.pid) setJoy(p.x, p.y);
+    else if (id === aim.pid) aimMove(p.x, p.y);
     // reprise : si le joystick a été lâché par erreur, un doigt qui glisse à gauche le reprend aussitôt
     else if (joy.pid === null && !bombTouches.has(id) && inJoyZone(p.x, p.y)) joyStart(id, p.x, p.y, true);
   }
@@ -2374,7 +2468,9 @@ function touchEnd(e, cancelled) {
     const id = 't' + t.identifier;
     bombTouches.delete(id);
     if (id === joy.pid) { const p = touchXY(t); joyEnd(p.x, p.y, cancelled); }
+    else if (id === aim.pid) { const p = touchXY(t); aimMove(p.x, p.y); aimEnd(cancelled); }
   }
+  if (aim.pid !== null && ![...e.touches].some(t => 't' + t.identifier === aim.pid)) aimEnd(true);
   // sécurité : si le doigt du joystick n'est plus sur l'écran, on le relâche
   if (joy.pid !== null && String(joy.pid).startsWith('t') && ![...e.touches].some(t => 't' + t.identifier === joy.pid)) releaseJoy();
 }
@@ -2412,7 +2508,7 @@ canvas.addEventListener('mousedown', e => {
   const sp = screenPos(e);
   throwAtScreen(sp.x, sp.y);
 });
-window.addEventListener('blur', releaseJoy);
+window.addEventListener('blur', () => { releaseJoy(); if (aim.pid !== null) aimEnd(true); });
 
 function drawJoystick() {
   if (!joy.enabled) return;
@@ -2572,11 +2668,20 @@ function howtoIllus(k, now, t) {
     if (ph > 0.08 && ph < 0.6) {              // zone de l'explosion
       ctx.save(); ctx.setLineDash([6, 5]); ctx.beginPath(); ctx.arc(tx, ty, 34, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,90,60,.18)'; ctx.fill(); ctx.lineWidth = 2.5; ctx.strokeStyle = '#d8321f'; ctx.stroke(); ctx.restore();
     }
-    if (ph < 0.2) {                            // tap / clic sur la cible
+    if (touchUI && ph < 0.55) {                // stick de visée : le pouce glisse, la trajectoire s'affiche, on lâche
+      const pull = Math.min(1, ph / 0.12), kx = 100 + 12 * pull, ky = 110 - 4 * pull;
+      ctx.beginPath(); ctx.arc(100, 110, 16, 0, Math.PI * 2); ctx.fillStyle = 'rgba(255,255,255,.45)'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = INK; ctx.stroke();
+      ctx.beginPath(); ctx.arc(kx, ky, 10, 0, Math.PI * 2); ctx.fillStyle = RED; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = INK; ctx.stroke();
+      if (ph < 0.15) {
+        ctx.beginPath(); ctx.ellipse(kx + 5, ky + 11, 7, 10, -0.5, 0, Math.PI * 2); ctx.fillStyle = '#ffd3b0'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = INK; ctx.stroke();
+        ctx.save(); ctx.setLineDash([2, 8]); ctx.lineCap = 'round'; ctx.lineWidth = 3; ctx.strokeStyle = '#d8321f';
+        ctx.beginPath(); ctx.moveTo(sx, sy - 10); ctx.quadraticCurveTo((sx + tx) / 2, sy - 80, tx, ty); ctx.stroke(); ctx.restore();
+      }
+    }
+    if (!touchUI && ph < 0.2) {                // clic sur la cible
       const r = 6 + ph / 0.2 * 18;
       ctx.beginPath(); ctx.arc(tx, ty, r, 0, Math.PI * 2); ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(11,12,15,' + (1 - ph / 0.2) + ')'; ctx.stroke();
-      if (touchUI) { ctx.beginPath(); ctx.ellipse(tx + 7, ty + 15, 9, 13, -0.5, 0, Math.PI * 2); ctx.fillStyle = '#ffd3b0'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = INK; ctx.stroke(); }
-      else { ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx + 4, ty + 16); ctx.lineTo(tx + 8, ty + 11); ctx.lineTo(tx + 14, ty + 18); ctx.lineTo(tx + 17, ty + 15); ctx.lineTo(tx + 11, ty + 9); ctx.lineTo(tx + 16, ty + 6); ctx.closePath(); ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = INK; ctx.stroke(); }
+      { ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx + 4, ty + 16); ctx.lineTo(tx + 8, ty + 11); ctx.lineTo(tx + 14, ty + 18); ctx.lineTo(tx + 17, ty + 15); ctx.lineTo(tx + 11, ty + 9); ctx.lineTo(tx + 16, ty + 6); ctx.closePath(); ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = INK; ctx.stroke(); }
     }
     if (ph >= 0.15 && ph < 0.55) {             // la bombe vole en cloche
       const q = (ph - 0.15) / 0.4, bx = sx + (tx - sx) * q, by = sy - 20 + (ty - sy) * q - Math.sin(q * Math.PI) * 52;
@@ -2620,7 +2725,7 @@ function drawHowto(now) {
   ctx.fillStyle = 'rgba(6,14,22,' + (0.6 * a) + ')'; ctx.fillRect(0, 0, W, H);
   const cards = [
     ['BOUGE', touchUI ? 'Pouce gauche : le joystick fait avancer ton Kaboom.' : 'Flèches ou ZQSD (ou WASD) pour déplacer ton Kaboom.'],
-    ['LANCE', touchUI ? 'Touche le terrain : la bombe tombe là où tu vises.' : 'Clic sur le terrain : la bombe tombe là où tu vises. Espace : sur le plus proche.'],
+    ['LANCE', touchUI ? 'Pouce droit : glisse pour viser, lâche pour lancer. Au centre : annulé.' : 'Clic sur le terrain : la bombe tombe là où tu vises. Espace : sur le plus proche.'],
     ['FANTÔME', 'K.O. ? Tu reviens en fantôme et ta glu colle les autres.']
   ];
   const m = 14, top = Math.max(10, safeT + 6), titleFs = Math.max(26, Math.min(48, Math.round(H / 9)));
@@ -3370,6 +3475,7 @@ function draw(now) {
   updateGlueTrails(now); drawGlueTrails(now);
   drawPickup(now);
   drawBombZones(performance.now());
+  drawAimPreview(performance.now());
   // les fantômes passent en arrière-plan : sous les joueurs vivants, pour que les Kaboom restent bien visibles
   const ghosts = Object.keys(players).filter(id => players[id].dead && players[id].ghost).map(id => [players[id], id, false]);
   if (me.dead && me.ghost) ghosts.push([me, myId, true]);
@@ -3405,7 +3511,7 @@ function draw(now) {
   drawOffscreen(now);
 
   // Commandes dessinées par-dessus, en coordonnées écran
-  if (!waiting) drawJoystick();
+  if (!waiting) { drawJoystick(); drawAimStick(); }
   // Bandeaux et récapitulatif en coordonnées écran, lisibles quelle que soit la taille du téléphone
   if (me.dead && !game.winner) drawEliminated(now);
   updatePartyUi(now);
