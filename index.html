@@ -471,7 +471,7 @@ const keys = {};
 // État de la partie : l'hôte est l'arbitre, les autres reçoivent une copie
 let game = { coins: [], scores: {}, winner: null, matchWinner: null, colors: {}, feed: [], round: 0, roundKills: {}, party: false, endResult: null, started: false, pickup: null, grab: null };
 let resetAt = 0;        // heure locale de la prochaine manche (pour le compte à rebours)
-let recapT0 = 0, winSeenAt = 0;        // moment où le récapitulatif est apparu
+let recapT0 = 0, winSeenAt = 0, recapTickN = 0;        // moment où le récapitulatif est apparu
 let feedSeq = 0;
 const feedSeen = {};      // id d'élimination -> moment où on l'a reçue (pour l'afficher quelques secondes)
 let coinSeq = 0;
@@ -1106,16 +1106,30 @@ function aimFrom(sx, sy, tx, ty, range) {
    K.O., bonus, compte à rebours, alerte HURRY UP, fin de manche. Volume et stéréo selon la distance au joueur.
    Le contexte audio ne démarre qu'après un premier geste (règle des navigateurs). Bouton pour couper le son. */
 const SFX = (() => {
-  let ac = null, master = null, noiseBuf = null, muted = false, distCurve = null;
+  let ac = null, master = null, revIn = null, noiseBuf = null, muted = false, distCurve = null;
+  // Chaîne de sortie : volume général → graves renforcés / aigus adoucis → compresseur ; + réverbération (salle) en parallèle
+  function mkChain(c) {
+    const m = c.createGain(), lo = c.createBiquadFilter(), hi = c.createBiquadFilter(), comp = c.createDynamicsCompressor();
+    lo.type = 'lowshelf'; lo.frequency.value = 140; lo.gain.value = 5;
+    hi.type = 'highshelf'; hi.frequency.value = 5200; hi.gain.value = -5;
+    comp.threshold.value = -16; comp.ratio.value = 5;
+    m.connect(lo); lo.connect(hi); hi.connect(comp); comp.connect(c.destination);
+    // réponse impulsionnelle synthétique : bruit stéréo qui décroît (~1,6 s), adouci
+    const sr = c.sampleRate, len = Math.floor(sr * 1.6), ir = c.createBuffer(2, len, sr);
+    for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); let lp = 0; for (let i = 0; i < len; i++) { lp += (Math.random() * 2 - 1 - lp) * 0.35; d[i] = lp * Math.exp(-i / sr * 3.4); } }
+    const conv = c.createConvolver(); conv.buffer = ir;
+    const rin = c.createGain(), rout = c.createGain(); rout.gain.value = 0.9;
+    rin.connect(conv); conv.connect(rout); rout.connect(lo);
+    return { m, rin };
+  }
   try { muted = localStorage.getItem('kaboom-mute') === '1'; } catch (e) {}
   function ensure() {
     if (ac) { if (ac.state === 'suspended' && ac.resume) ac.resume().catch(() => {}); return ac; }
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
     try { ac = new AC(); } catch (e) { return null; }
-    const comp = ac.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 5;
-    master = ac.createGain(); master.gain.value = muted ? 0 : 0.6;
-    master.connect(comp); comp.connect(ac.destination);
+    { const ch = mkChain(ac); master = ch.m; revIn = ch.rin; }
+    master.gain.value = muted ? 0 : 0.6;
     noiseBuf = ac.createBuffer(1, Math.floor(ac.sampleRate * 2.5), ac.sampleRate);
     const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     if (ac.resume) ac.resume().catch(() => {});
@@ -1125,8 +1139,9 @@ const SFX = (() => {
   if (window.addEventListener) ['pointerdown', 'touchend', 'keydown', 'click'].forEach(ev => window.addEventListener(ev, ensure, { passive: true }));
   const ok = () => ac && master && !muted && (ac.state === 'running' || (api && api._force));
   // sortie d'un son : volume (et panoramique) selon la position par rapport à mon Kaboom
-  function out(x, y, vol) {
+  function out(x, y, vol, rv = 0.18) {
     const g = ac.createGain(); let v = vol;
+    if (rv > 0 && revIn) { const sg = ac.createGain(); sg.gain.value = rv; g.connect(sg); sg.connect(revIn); }   // part envoyée dans la réverbération
     if (x != null && typeof me === 'object') {
       const cx = me.x || WW / 2, cy = me.y || WH / 2, d = Math.hypot(x - cx, y - cy);
       v *= Math.max(0.35, 1 - d / 1100);
@@ -1151,6 +1166,27 @@ const SFX = (() => {
     g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(vol, t0 + 0.006); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     s.connect(f); f.connect(g); g.connect(dst); s.start(t0, Math.random() * 0.5); s.stop(t0 + dur + 0.02);
   }
+  // cloche / verre / marimba : partiels inharmoniques qui s'éteignent à des vitesses différentes
+  function bell(dst, t, f, v, dec = 0.5) {
+    [[1, 1, 1], [2.76, 0.35, 0.4], [5.4, 0.14, 0.2]].forEach(([m, a, k]) => tone(dst, 'sine', f * m, f * m, t, dec * k, v * a, 0.002));
+  }
+  // cuivres chaleureux : dents de scie désaccordées passées dans un filtre qui s'ouvre à l'attaque, + sous-grave
+  function brass(dst, t, notesM, dur, v) {
+    const g = ac.createGain(), lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 1.2;
+    lp.frequency.setValueAtTime(350, t); lp.frequency.exponentialRampToValueAtTime(2400, t + 0.06); lp.frequency.exponentialRampToValueAtTime(1100, t + dur);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(v * 0.11, t + 0.03); g.gain.setValueAtTime(v * 0.11, t + dur * 0.75); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    lp.connect(g); g.connect(dst);
+    for (const m of notesM) {
+      const f = 440 * Math.pow(2, (m - 69) / 12);
+      for (const det of [-7, 7]) { const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det; o.connect(lp); o.start(t); o.stop(t + dur + 0.05); }
+    }
+    const f0 = 440 * Math.pow(2, (notesM[0] - 12 - 69) / 12); tone(dst, 'sine', f0, f0, t, dur, v * 0.25, 0.02);
+  }
+  // tambour grave (timbale / tom) : coup sourd qui descend
+  function tom(dst, t, f, v) { tone(dst, 'sine', f, f * 0.55, t, 0.38, v, 0.003); noise(dst, t, 0.03, v * 0.25, 'lowpass', 1800, 800, 0.7); }
+  function crash(dst, t, v, dur = 1.2) { noise(dst, t, dur, v, 'highpass', 5200, 4000, 0.6); noise(dst, t, dur * 0.5, v * 0.6, 'bandpass', 8500, 7000, 0.8); }
+  // bloc de bois (tic-tac, compte à rebours)
+  function wood(dst, t, f, v) { tone(dst, 'sine', f, f * 0.9, t, 0.07, v, 0.001); noise(dst, t, 0.025, v * 0.5, 'bandpass', f * 2.2, f * 2, 3); }
   const notes = (dst, type, list, step, dur, vol) => { const t = ac.currentTime; list.forEach((f, i) => tone(dst, type, f, f, t + i * step, dur, vol)); };
   const vib = p => { try { if (navigator.vibrate && !muted) navigator.vibrate(p); } catch (e) {} };
   // ---------- Musique : petit air hawaïen original ----------
@@ -1218,7 +1254,7 @@ const SFX = (() => {
   }
   let CHORD_T = { C: [60, 64, 67, 72], A7: [57, 61, 64, 67], D7: [62, 66, 69, 72], G7: [55, 59, 62, 65] };
   const BASSLINE = [0, 0, 12, 0, 7, 0, 12, 7];                        // basse qui rebondit (en demi-tons depuis la fondamentale)
-  function kick(t, v) { tone(musBus, 'sine', 160, 42, t, 0.2, v, 0.002); noise(musBus, t, 0.015, v * 0.25, 'lowpass', 2500, 2500); }
+  function kick(t, v) { tone(musBus, 'sine', 130, 38, t, 0.3, v * 1.15, 0.002); noise(musBus, t, 0.015, v * 0.2, 'lowpass', 1800, 1800); }
   function snare(t, v) { noise(musBus, t, 0.13, v, 'bandpass', 2000, 1400, 0.9); tone(musBus, 'triangle', 220, 160, t, 0.08, v * 0.5); }
   function hat(t, v, open) { noise(musBus, t, open ? 0.12 : 0.03, v, 'highpass', 7500, 7000, 0.7); }
   function xylo(t, m, v) {               // lame de bois frappée : fondamentale + partiel aigu qui s'éteint vite + petit « toc »
@@ -1246,7 +1282,7 @@ const SFX = (() => {
   function organ(t, ch, v) {             // orgue « qui sautille » : accord court, son rond
     const g = ac.createGain(), lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2200; lp.connect(g); g.connect(musBus);
     g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05 * v, t + 0.006); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
-    for (const m of SKANK[ch]) for (const [mul, ty] of [[1, 'square'], [2, 'sine']]) { const o = ac.createOscillator(); o.type = ty; o.frequency.value = mtof(m) * mul; o.connect(lp); o.start(t); o.stop(t + 0.15); }
+    for (const m of SKANK[ch]) for (const [mul, ty] of [[1, 'triangle'], [2, 'sine']]) { const o = ac.createOscillator(); o.type = ty; o.frequency.value = mtof(m) * mul; o.connect(lp); o.start(t); o.stop(t + 0.15); }
   }
   function horns(t, ch, dur, v) {        // section de cuivres : deux dents de scie désaccordées, le filtre s'ouvre à l'attaque
     const g = ac.createGain(), lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.Q.value = 1.5;
@@ -1305,30 +1341,33 @@ const SFX = (() => {
     g.gain.setValueAtTime(vol, t); g.gain.setValueAtTime(vol * 0.7, t + Math.min(0.05, dur * 0.3)); g.gain.setValueAtTime(vol * 0.7, t + dur * 0.9); g.gain.linearRampToValueAtTime(0, t + dur);
     o.connect(g); g.connect(musBus); o.start(t); o.stop(t + dur + 0.02);
   }
-  function musicStep(i, t, tempo) {
+  function musicStep(i, t, tempo, mode) {
     const beat = 60 / (BPM * tempo), half = beat / 2, bar = Math.floor(i / 8) % 16, st = i % 8, ch = PROG[bar];
     const tt = t + (st % 2 ? beat * 0.03 : 0);
     const last = bar === 15, nextCh = PROG[(bar + 1) % 16];
+    const menu = mode === 'menu';
     // batterie ska : grosse caisse sur chaque temps, caisse claire sur 2 et 4, charleston ouvert sur les contretemps
-    if (st % 2 === 0) kick(tt, st === 0 ? 0.55 : 0.4);
-    if (st === 2 || st === 6) snare(tt, 0.34);
-    if (last && st >= 4) { snare(tt + half / 2, 0.2); snare(tt + half * 0.25, 0.14); }   // roulement avant la reprise
-    hat(tt, st % 2 ? 0.07 : 0.03, st % 2 === 1);
-    // arpège 8 bits en doubles croches, dans l'aigu, très discret
-    for (let k = 0; k < 2; k++) { const nt = CHORD_T[ch][(st * 2 + k) % 4] + 12; chip(tt + k * half / 2, nt, half * 0.42, 0.018, 0.125); }
+    // (accueil : version plus douce, grosse caisse sur 1 et 3, caisse claire légère)
+    if (menu) { if (st === 0 || st === 4) kick(tt, 0.4); if (st === 2 || st === 6) snare(tt, 0.12); hat(tt, st % 2 ? 0.04 : 0.015, false); }
+    else {
+      if (st % 2 === 0) kick(tt, st === 0 ? 0.55 : 0.4);
+      if (st === 2 || st === 6) snare(tt, 0.34);
+      if (last && st >= 4) { snare(tt + half / 2, 0.2); snare(tt + half * 0.25, 0.14); }   // roulement avant la reprise
+      hat(tt, st % 2 ? 0.07 : 0.03, st % 2 === 1);
+    }
     // contretemps : guitare « tchak » + orgue qui sautille
-    if (st % 2) { skank(tt, ch, 1); organ(tt + 0.004, ch, 1); }
+    if (st % 2) { skank(tt, ch, menu ? 0.7 : 1); if (!menu) organ(tt + 0.004, ch, 1); }
     // basse qui marche (une note par temps, et une note d'approche vers l'accord suivant)
     if (st % 2 === 0) {
       const m = st === 6 && nextCh !== ch ? WALK[nextCh][0] - 1 : WALK[ch][st / 2];
-      const f = mtof(m); tone(musBus, 'triangle', f, f, tt, beat * 0.85, 0.32, 0.006); tone(musBus, 'sine', f / 2, f / 2, tt, beat * 0.7, 0.18, 0.006);
+      const f = mtof(m); tone(musBus, 'triangle', f, f, tt, beat * 0.85, 0.26, 0.006); tone(musBus, 'sine', f / 2, f / 2, tt, beat * 0.8, 0.34, 0.008);   // basse ronde + sous-basse
     }
     // coups de cuivres : « pa-PAM » à la fin des phrases (toutes les 4 mesures), et un coup au début de la boucle
-    if (bar % 4 === 3 && (st === 5 || st === 6)) horns(tt, ch, st === 5 ? half * 0.8 : beat * 1.2, st === 6 ? 1 : 0.8);
-    if (bar === 0 && st === 0) horns(tt, ch, beat * 0.9, 1);
+    if (!menu && bar % 4 === 3 && (st === 5 || st === 6)) horns(tt, ch, st === 5 ? half * 0.8 : beat * 1.2, st === 6 ? 1 : 0.8);
+    if (!menu && bar === 0 && st === 0) horns(tt, ch, beat * 0.9, 1);
     // mélodie au xylophone
     for (const [b0, n, d] of MEL[bar]) if (Math.round(b0 * 2) === st) {
-      if (MUSIC_STYLE === 'russe') { balalaika(tt, NT[n], d * beat); xylo(tt, NT[n], 0.3); chip(tt, NT[n] - 12, d * beat * 0.95, 0.045, 0.25); continue; }   // balalaïka + xylophone + doublure 8 bits à l'octave du dessous
+      if (MUSIC_STYLE === 'russe') { balalaika(tt, NT[n], d * beat); xylo(tt, NT[n], 0.3); continue; }   // balalaïka + xylophone + doublure 8 bits à l'octave du dessous
       xylo(tt, NT[n], 1);
       if (d >= 1.5) xylo(tt + beat, NT[n], 0.6);                       // notes longues : on retape la lame
       if (d >= 2.5) xylo(tt + beat * 2, NT[n], 0.45);
@@ -1348,38 +1387,49 @@ const SFX = (() => {
   }
   // la musique ne joue que pendant le jeu : elle démarre juste après le compte à rebours (du début de la boucle),
   // et se tait dans le menu, la salle d'attente, le compte à rebours et le récapitulatif entre les manches
-  function musicShouldPlay() {
-    try { return typeof game === 'object' && game.started && !waiting && !game.winner && !game.endResult && isFinite(goAt) && performance.now() >= goAt; }
-    catch (e) { return false; }
+  // 'menu' : accueil et salle d'attente (thème plus doux) ; 'game' : pendant la manche ; null : décompte, fin de manche
+  function musicMode() {
+    try {
+      if (typeof document !== 'undefined' && document.body && !document.body.classList.contains('ingame')) return 'menu';
+      if (typeof game !== 'object') return null;
+      if (waiting) return 'menu';
+      if (game.started && !game.winner && !game.endResult && isFinite(goAt) && performance.now() >= goAt) return 'game';
+      return null;
+    } catch (e) { return null; }
   }
+  let musMode = null;
+  const BPM_MENU = 100;
   function musTick() {
     if (!ac || ac.state !== 'running' || !musicOn || muted || (typeof document !== 'undefined' && document.hidden)) { if (ac) musNext = 0; return; }
-    if (!musicShouldPlay()) { musNext = 0; musStep = 0; musLead = null; return; }
-    if (!musBus) { musBus = ac.createGain(); musBus.gain.value = 0.33; musBus.connect(master); }
-    const now = ac.currentTime, tempo = musicTempo();
+    const mode = musicMode();
+    if (mode !== musMode) { musMode = mode; musNext = 0; musStep = 0; musLead = null; }   // changement d'écran : on repart du début
+    if (!mode) return;
+    if (!musBus) { musBus = ac.createGain(); musBus.gain.value = 0.33; musBus.connect(master); if (revIn) { const r = ac.createGain(); r.gain.value = 0.12; musBus.connect(r); r.connect(revIn); } }
+    musBus.gain.value = mode === 'menu' ? 0.26 : 0.33;
+    const now = ac.currentTime, tempo = mode === 'menu' ? BPM_MENU / BPM : musicTempo();
     if (musNext < now) musNext = now + 0.08;
-    while (musNext < now + 0.35) { musicStep(musStep, musNext, tempo); musNext += 60 / (BPM * tempo) / 2; musStep++; }
+    while (musNext < now + 0.35) { musicStep(musStep, musNext, tempo, mode); musNext += 60 / (BPM * tempo) / 2; musStep++; }
   }
   function startMusic() { if (!musTimer && typeof setInterval === 'function') musTimer = setInterval(musTick, 90); }
   // rendu hors ligne d'un son (aperçu, réglage des niveaux)
   async function offline(name, args, secs) {
     const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext; if (!OAC) return null;
-    const keep = [ac, master, noiseBuf, muted];
+    const keep = [ac, master, noiseBuf, muted, revIn];
     const oc = new OAC(2, Math.floor(44100 * secs), 44100);
-    ac = oc; master = oc.createGain(); master.gain.value = 0.6;
-    const comp = oc.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 5; master.connect(comp); comp.connect(oc.destination);
+    ac = oc; { const ch = mkChain(oc); master = ch.m; revIn = ch.rin; } master.gain.value = 0.6;
     noiseBuf = oc.createBuffer(1, Math.floor(oc.sampleRate * 2.5), oc.sampleRate);
     { const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
     muted = false;
     if (name === 'music') {                       // aperçu de la musique : on programme toute la durée d'un coup
       const keepBus = musBus, keepLead = musLead;
-      musBus = oc.createGain(); musBus.gain.value = 0.33; musBus.connect(master); musLead = null;
+      musBus = oc.createGain(); musBus.gain.value = args && args[1] === 'menu' ? 0.26 : 0.33; musBus.connect(master); musLead = null;
+      { const r = oc.createGain(); r.gain.value = 0.12; musBus.connect(r); r.connect(revIn); }
       // aperçu : tempo fixe, ou « ramp » = accélération comme pendant une manche (puis HURRY UP sur la fin)
       const tempoAt = t => args && args[0] === 'ramp' ? (t > secs * 0.8 ? BPM_HURRY : BPM_START + (BPM_END - BPM_START) * Math.min(1, t / (secs * 0.8))) / BPM : (args && args[0] || 1);
-      for (let i = 0, t = 0.05; t < secs - 0.5; i++) { const k = tempoAt(t); musicStep(i, t, k); t += 60 / (BPM * k) / 2; }
+      for (let i = 0, t = 0.05; t < secs - 0.5; i++) { const k = tempoAt(t); musicStep(i, t, k, args && args[1]); t += 60 / (BPM * k) / 2; }
       musBus = keepBus; musLead = keepLead;
     } else { const realOk = api[name]; try { api._force = true; realOk.apply(api, args); } finally { api._force = false; } }
-    [ac, master, noiseBuf, muted] = keep;
+    [ac, master, noiseBuf, muted, revIn] = keep;
     return oc.startRendering();
   }
   const api = {
@@ -1392,15 +1442,15 @@ const SFX = (() => {
       muted = !!m; try { localStorage.setItem('kaboom-mute', muted ? '1' : '0'); } catch (e) {}
       ensure(); if (master) master.gain.value = muted ? 0 : 0.6;
     },
-    throw(x, y, glue) {                       // « fuiii » du lancer, « bloup » pour la glu
-      if (!ok()) return; const d = out(x, y, 1), t = ac.currentTime;
-      if (glue) { tone(d, 'sine', 260, 620, t, 0.16, 0.22); return; }
-      noise(d, t, 0.18, 0.22, 'bandpass', 700, 2600, 1.4);
+    throw(x, y, glue) {                       // « fwouf » du lancer (souffle + petit coup grave) ; « bloup » pour la glu
+      if (!ok()) return; const d = out(x, y, 2.3, 0.12), t = ac.currentTime;
+      if (glue) { tone(d, 'sine', 190, 560, t, 0.13, 0.3, 0.004); tone(d, 'sine', 300, 820, t + 0.07, 0.1, 0.18, 0.004); return; }
+      noise(d, t, 0.26, 0.34, 'bandpass', 320, 1500, 1.3); tone(d, 'sine', 150, 85, t, 0.14, 0.28, 0.004);
     },
     boom(x, y, size, glue) {                  // explosion sourde : « BOUM » étouffé, grave et rond, sans crépitement aigu
       if (!ok()) return; const t = ac.currentTime;
       if (glue) { const d = out(x, y, 1); noise(d, t, 0.28, 0.4, 'lowpass', 1100, 160, 2); tone(d, 'sine', 190, 80, t, 0.25, 0.35); return; }
-      const k = size || 1, d0 = out(x, y, 1.6);
+      const k = size || 1, d0 = out(x, y, 1.25, 0.3);
       // tout passe dans un filtre qui coupe les aigus : c'est lui qui rend le son « sourd »
       const muff = ac.createBiquadFilter(); muff.type = 'lowpass'; muff.Q.value = 0.7;
       muff.frequency.setValueAtTime(1400, t); muff.frequency.exponentialRampToValueAtTime(300, t + 0.5 * k); muff.connect(d0);
@@ -1415,33 +1465,74 @@ const SFX = (() => {
       noise(bus, t, 0.55 * k, 0.75, 'lowpass', 900, 90, 0.8);                       // souffle étouffé
       noise(d, t + 0.05, 1.3 * k, 0.5, 'lowpass', 260, 45, 0.7);                   // grondement qui roule
     },
-    hit(x, y, mine, ko) {                     // « boing » du bocal touché
-      if (!ok()) return; const d = out(x, y, mine ? 1.1 : 0.8), t = ac.currentTime;
-      const o = tone(d, 'triangle', 560, 240, t, 0.22, 0.32);
-      const lfo = ac.createOscillator(), lg = ac.createGain(); lfo.frequency.value = 28; lg.gain.value = 40;
-      lfo.connect(lg); lg.connect(o.frequency); lfo.start(t); lfo.stop(t + 0.24);
-      if (ko) { tone(d, 'sine', 900, 110, t + 0.12, 0.6, 0.28); noise(d, t + 0.1, 0.12, 0.3, 'bandpass', 1500, 600, 1); }
+    hit(x, y, mine, ko) {                     // bocal de verre touché : « tonk » sourd + petit tintement de verre
+      if (!ok()) return; const d = out(x, y, mine ? 2.3 : 1.7, 0.22), t = ac.currentTime;
+      tone(d, 'sine', 240, 95, t, 0.16, 0.55, 0.003); noise(d, t, 0.05, 0.3, 'lowpass', 1400, 300, 0.7);
+      bell(d, t + 0.004, 1150 + Math.random() * 250, 0.16, 0.32);
+      if (ko) {                                // K.O. : grand souffle qui descend, coup de timbale, cascade de verre
+        noise(d, t + 0.02, 0.5, 0.38, 'bandpass', 1500, 220, 1.1); tom(d, t + 0.04, 105, 0.7);
+        [2093, 1760, 1397, 1175].forEach((f, i) => bell(d, t + 0.1 + i * 0.065, f, 0.1, 0.3));
+      }
       if (mine) vib(ko ? [70, 40, 120] : 35);
     },
-    bounce(x, y, k) {                         // petit « boing » quand le Kaboom K.O. rebondit
-      if (!ok()) return; const d = out(x, y, 0.9 * (k || 1)), t = ac.currentTime;
-      tone(d, 'sine', 150, 420, t, 0.14, 0.28); noise(d, t, 0.05, 0.12, 'lowpass', 600, 200, 0.8);
+    bounce(x, y, k) {                         // « bwomp » élastique quand le Kaboom K.O. rebondit
+      if (!ok()) return; const d = out(x, y, 1.9 * (k || 1), 0.15), t = ac.currentTime;
+      tone(d, 'sine', 95, 190, t, 0.13, 0.42, 0.004); noise(d, t, 0.05, 0.22, 'lowpass', 600, 200, 0.8);
     },
-    pop(x, y) { if (!ok()) return; const d = out(x, y, 1), t = ac.currentTime; noise(d, t, 0.07, 0.35, 'highpass', 2500, 2500); tone(d, 'sine', 900, 1500, t, 0.09, 0.2); },
-    pickup(x, y) { if (!ok()) return; notes(out(x, y, 0.9), 'triangle', [660, 880, 1320], 0.065, 0.12, 0.22); },
-    beep() { if (!ok()) return; tone(out(null, null, 1), 'square', 520, 520, ac.currentTime, 0.12, 0.12); },
-    go() { if (!ok()) return; const d = out(null, null, 1), t = ac.currentTime; tone(d, 'square', 784, 784, t, 0.32, 0.12); tone(d, 'triangle', 1046, 1046, t, 0.36, 0.18); },
-    hurry() {                                 // sirène d'alerte (deux tons, deux fois)
-      if (!ok()) return; const d = out(null, null, 1), t = ac.currentTime;
-      [880, 660, 880, 660].forEach((f, i) => tone(d, 'sawtooth', f, f, t + i * 0.2, 0.19, 0.08, 0.01));
-      tone(d, 'sine', 70, 40, t, 0.4, 0.6);
+    pop(x, y) {                               // bulle du bouclier qui éclate
+      if (!ok()) return; const d = out(x, y, 2.6, 0.25), t = ac.currentTime;
+      tone(d, 'sine', 480, 1500, t, 0.06, 0.32, 0.002); noise(d, t, 0.045, 0.25, 'highpass', 3000, 3000); bell(d, t + 0.02, 1760, 0.08, 0.3);
     },
-    roundEnd(won, final) {                    // petite fanfare (ou trois notes qui descendent)
-      if (!ok()) return; const d = out(null, null, 1);
-      if (won) notes(d, 'triangle', final ? [523, 659, 784, 1047, 1319] : [523, 659, 784, 1047], 0.11, 0.22, 0.22);
-      else notes(d, 'triangle', [784, 659, 523], 0.14, 0.24, 0.16);
+    pickup(x, y) {                            // bonus : arpège de marimba, avec un léger scintillement
+      if (!ok()) return; const d = out(x, y, 1, 0.3), t = ac.currentTime;
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => bell(d, t + i * 0.055, f, 0.2, 0.6));
+      noise(d, t + 0.05, 0.35, 0.05, 'highpass', 6500, 6500, 0.6);
     },
-    click() { if (!ok()) return; tone(out(null, null, 1), 'triangle', 1300, 800, ac.currentTime, 0.05, 0.12); }
+    beep(n) {                                 // compte à rebours 3-2-1 : bloc de bois + tom, de plus en plus aigu
+      if (!ok()) return; const d = out(null, null, 1, 0.25), t = ac.currentTime;
+      const f = n === 1 ? 880 : n === 2 ? 760 : n === 3 ? 660 : 600;
+      wood(d, t, f, n > 3 ? 0.28 : 0.45); tom(d, t, n === 1 ? 160 : 130, n > 3 ? 0.3 : 0.5);
+    },
+    go() {                                    // GO ! : accord de cuivres, grosse timbale, cymbale
+      if (!ok()) return; const d = out(null, null, 1, 0.35), t = ac.currentTime;
+      brass(d, t, [60, 64, 67, 72], 0.6, 1); tom(d, t, 90, 0.9); crash(d, t, 0.22, 1.3);
+    },
+    hurry() {                                 // alarme : corne grave qui monte deux fois (« wouuu-WOUU »), coup de timbale
+      if (!ok()) return; const d = out(null, null, 0.7, 0.3), t = ac.currentTime;
+      const g = ac.createGain(), lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1100; lp.Q.value = 2; lp.connect(g); g.connect(d);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.12, t + 0.05); g.gain.setValueAtTime(0.12, t + 1.0); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
+      for (const det of [-9, 9]) {
+        const o = ac.createOscillator(); o.type = 'sawtooth'; o.detune.value = det;
+        o.frequency.setValueAtTime(196, t); o.frequency.linearRampToValueAtTime(294, t + 0.45); o.frequency.setValueAtTime(196, t + 0.55); o.frequency.linearRampToValueAtTime(330, t + 1.05);
+        o.connect(lp); o.start(t); o.stop(t + 1.25);
+      }
+      tom(d, t, 70, 0.95); tom(d, t + 0.55, 70, 0.8); crash(d, t, 0.15, 1);
+    },
+    roundEnd(won, final) {                    // fin de manche : fanfare de cuivres (victoire) ou trombone qui se désole
+      if (!ok()) return; const d = out(null, null, 0.75, 0.35), t = ac.currentTime;
+      if (won) {
+        [60, 64, 67].forEach((m, i) => brass(d, t + i * 0.1, [m], 0.16, 0.9));
+        brass(d, t + 0.32, final ? [60, 64, 67, 72, 76] : [60, 64, 67, 72], final ? 1.5 : 0.95, 1.1);
+        tom(d, t + 0.32, 98, 0.75); crash(d, t + 0.32, 0.2, final ? 1.8 : 1.2);
+        if (final) [72, 76, 79, 84].forEach((m, i) => bell(d, t + 0.5 + i * 0.09, 440 * Math.pow(2, (m - 69) / 12), 0.13, 0.7));
+      } else {
+        const lp = ac.createBiquadFilter(), g = ac.createGain(); lp.type = 'lowpass'; lp.Q.value = 4; lp.connect(g); g.connect(d);
+        [[55, 0, 0.3], [54, 0.32, 0.3], [53, 0.64, 0.3], [52, 0.96, 0.9]].forEach(([m, dt, du]) => {
+          const f = 440 * Math.pow(2, (m - 69) / 12);
+          for (const det of [-6, 6]) { const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.detune.value = det; o.connect(lp); o.start(t + dt); o.stop(t + dt + du); }
+        });
+        lp.frequency.setValueAtTime(700, t);
+        for (let k = 0; k < 9; k++) lp.frequency.setValueAtTime(k % 2 ? 450 : 1100, t + 0.96 + k * 0.1);   // « wah-wah » sur la dernière note
+        g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.1, t + 0.03); g.gain.setValueAtTime(0.1, t + 1.7); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.9);
+      }
+    },
+    tick(n) {                                 // décompte avant la manche suivante : tic-tac, la tension monte sur les 3 dernières secondes
+      if (!ok()) return; const d = out(null, null, 1, 0.2), t = ac.currentTime;
+      wood(d, t, n % 2 ? 1050 : 820, 0.75);
+      if (n <= 3) tom(d, t, n === 1 ? 175 : 130, 0.5);
+      if (n === 2) noise(d, t, 2.0, 0.12, 'bandpass', 250, 3200, 1.4);                    // souffle qui monte jusqu'au départ
+    },
+    click() { if (!ok()) return; wood(out(null, null, 1, 0.1), ac.currentTime, 1250, 0.5); }
   };
   return api;
 })();
@@ -3627,7 +3718,7 @@ function drawCountdown(now) {
   const left = goAt - now;
   if (isFinite(left)) {
     const n = left > 0 ? Math.ceil(left / 1000) : 0;
-    if (n !== cdSoundN) { if (n > 0 && n <= 5) SFX.beep(); else if (n === 0 && cdSoundN > 0) SFX.go(); cdSoundN = n; }
+    if (n !== cdSoundN) { if (n > 0 && n <= 5) SFX.beep(n); else if (n === 0 && cdSoundN > 0) SFX.go(); cdSoundN = n; }
   }
   if (left <= -500) return;
   ctx.save();
@@ -4105,6 +4196,7 @@ function drawRecap(now) {
 
   // pied : « MANCHE SUIVANTE DANS » + chiffre dans une pastille qui rebondit
   const leftMs = Math.max(0, resetAt - now), left = Math.ceil(leftMs / 1000);
+  if (left !== recapTickN) { if (left > 0 && left <= 5) SFX.tick(left); recapTickN = left; }
   const ft = (final ? 'LA FÊTE COMMENCE DANS' : 'MANCHE SUIVANTE DANS'), ffs = 24;
   const fw = nameW(ft, ffs), fy = py + ph - footH / 2 - 2, R = 17, tot = fw + 14 + R * 2;
   ctx.textAlign = 'left';
